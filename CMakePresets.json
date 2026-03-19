@@ -33,11 +33,13 @@
     },
     {
       "name": "linux",
-      "displayName": "Linux Release (GCC/Ninja)",
+      "displayName": "Linux Release — GCC 11.2.1 / Ninja  [Nuke 15+]",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build_linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE":       "Release",
+        "CMAKE_C_COMPILER":       "gcc-11",
+        "CMAKE_CXX_COMPILER":     "g++-11",
         "CMAKE_TOOLCHAIN_FILE":   "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET":   "x64-linux"
       }
