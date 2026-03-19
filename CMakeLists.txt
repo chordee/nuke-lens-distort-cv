@@ -30,7 +30,7 @@ list(APPEND CMAKE_PREFIX_PATH "${NUKE_ROOT}")
 find_package(Nuke REQUIRED)
 
 # OpenCV — resolved via vcpkg toolchain
-find_package(OpenCV REQUIRED COMPONENTS core)
+find_package(OpenCV REQUIRED COMPONENTS core calib3d)
 
 # nlohmann/json — header-only, resolved via vcpkg toolchain
 find_package(nlohmann_json CONFIG REQUIRED)

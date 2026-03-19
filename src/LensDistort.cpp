@@ -48,6 +48,7 @@ namespace {
 #include "DDImage/Thread.h"
 
 #include <opencv2/core.hpp>
+#include <opencv2/calib3d.hpp>   // getOptimalNewCameraMatrix only — no parallel_for_
 
 #include <nlohmann/json.hpp>
 
@@ -82,8 +83,14 @@ class LensDistort : public Iop
     double _centerX, _centerY;
     int    _filter;
 
+    // getOptimalNewCameraMatrix alpha: 0=no black borders, 1=all pixels retained
+    double _alpha;
+
     // NeRFStudio JSON import
     const char* _jsonFile;
+
+    // Computed optimal new camera matrix (filled in _validate, displayed read-only)
+    double _newFx, _newFy, _newCx, _newCy;
 
     // Full-frame output cache, one cv::Mat per channel
     Lock                     _lock;
@@ -100,7 +107,9 @@ public:
         , _focalX(0), _focalY(0)
         , _centerX(0.5), _centerY(0.5)
         , _filter(1)
+        , _alpha(1.0)
         , _jsonFile("")
+        , _newFx(0), _newFy(0), _newCx(0), _newCy(0)
         , _isFirstTime(true)
     {}
 
@@ -162,6 +171,29 @@ public:
         Tooltip(f, "Pixel interpolation for cv::remap.\n"
                    "Nearest — fastest.  Bilinear — default.  Bicubic — best quality.");
 
+        Double_knob(f, &_alpha, "alpha", "Alpha");
+        SetRange(f, 0.0, 1.0);
+        Tooltip(f, "getOptimalNewCameraMatrix alpha.\n"
+                   "0 = crop to avoid black borders (all output pixels are valid).\n"
+                   "1 = retain all source pixels (corners may be black).\n"
+                   "Match your Python restore_distortion.py default: 1.0.");
+
+        Divider(f, "Computed Output Matrix (new_K)");
+
+        Double_knob(f, &_newFx, "new_fx", "new Focal X");
+        SetFlags(f, Knob::READ_ONLY | Knob::NO_ANIMATION | Knob::NO_RERENDER);
+        Tooltip(f, "Optimal output focal length X computed by getOptimalNewCameraMatrix (alpha=1).\n"
+                   "Updated automatically when image format or intrinsics change.");
+        Double_knob(f, &_newFy, "new_fy", "new Focal Y");
+        SetFlags(f, Knob::READ_ONLY | Knob::NO_ANIMATION | Knob::NO_RERENDER);
+        Tooltip(f, "Optimal output focal length Y.");
+        Double_knob(f, &_newCx, "new_cx", "new Principal X");
+        SetFlags(f, Knob::READ_ONLY | Knob::NO_ANIMATION | Knob::NO_RERENDER);
+        Tooltip(f, "Optimal output principal point X (pixels).");
+        Double_knob(f, &_newCy, "new_cy", "new Principal Y");
+        SetFlags(f, Knob::READ_ONLY | Knob::NO_ANIMATION | Knob::NO_RERENDER);
+        Tooltip(f, "Optimal output principal point Y (pixels).");
+
         Divider(f, "NeRFStudio Import");
 
         File_knob(f, &_jsonFile, "json_file", "JSON File");
@@ -188,6 +220,31 @@ public:
     {
         copy_info();
         _isFirstTime = true;  // invalidate cache on any parameter change
+
+        const int w = info_.w();
+        const int h = info_.h();
+        if (w > 0 && h > 0) {
+            const double fx = (_focalX > 0.0) ? _focalX : static_cast<double>(w);
+            const double fy = (_focalY > 0.0) ? _focalY : static_cast<double>(h);
+            const double cx = _centerX * w;
+            const double cy = _centerY * h;
+            const cv::Mat K    = (cv::Mat_<double>(3,3) << fx,0,cx, 0,fy,cy, 0,0,1);
+            const cv::Mat dist = (cv::Mat_<double>(1,8)
+                << _k1, _k2, _p1, _p2, _k3, _k4, _k5, _k6);
+            const cv::Mat newK = cv::getOptimalNewCameraMatrix(
+                K, dist, cv::Size(w, h), _alpha, cv::Size(w, h));
+            _newFx = newK.at<double>(0,0);
+            _newFy = newK.at<double>(1,1);
+            _newCx = newK.at<double>(0,2);
+            _newCy = newK.at<double>(1,2);
+
+            // Push computed values into the knob's internal storage so the
+            // properties panel displays the current numbers.
+            if (Knob* k = knob("new_fx")) k->set_value(_newFx);
+            if (Knob* k = knob("new_fy")) k->set_value(_newFy);
+            if (Knob* k = knob("new_cx")) k->set_value(_newCx);
+            if (Knob* k = knob("new_cy")) k->set_value(_newCy);
+        }
     }
 
     // ── _request ──────────────────────────────────────────────────────────────
@@ -404,20 +461,37 @@ private:
     }
 
     // ── _buildMaps ────────────────────────────────────────────────────────────
-    // Pure C++ — no OpenCV API calls (avoids parallel_for_ / thread pool).
+    // Matches Python restore_distortion.py behaviour exactly:
+    //   getOptimalNewCameraMatrix(alpha=1.0) → new_K  (pure matrix math, no threading)
+    //   All pixel-level loops are plain C++  (avoids parallel_for_ crashes in Nuke 17)
     //
     // Undistort (mode=0):
-    //   Each output pixel (col,row) maps from the undistorted grid.
-    //   Apply forward Brown-Conrady to get the distorted source coord.
+    //   Output space = new_K.  For each output pixel, apply forward Brown-Conrady
+    //   to get the distorted source coord in original K space.
     //
     // Distort (mode=1):
-    //   Each output pixel (col,row) is in distorted space.
-    //   We need the undistorted source coord → iterative Newton inverse.
+    //   Output space = original K (distorted).  Newton-iterate to find the
+    //   undistorted normalised coord, then project through new_K to get the
+    //   source pixel in the undistorted (new_K) image.
     void _buildMaps(int w, int h, double fx, double fy, double cx, double cy,
                     cv::Mat& mapX, cv::Mat& mapY) const
     {
-        mapX.create(cv::Size(w, h), CV_32FC1);
-        mapY.create(cv::Size(w, h), CV_32FC1);
+        // getOptimalNewCameraMatrix is pure linear algebra (no parallel_for_).
+        // alpha=1.0 → preserve all source pixels (may show black corners after
+        // undistort), matching Python's default alpha=1.0.
+        const cv::Mat K    = (cv::Mat_<double>(3,3) << fx,0,cx, 0,fy,cy, 0,0,1);
+        const cv::Mat dist = (cv::Mat_<double>(1,8)
+            << _k1, _k2, _p1, _p2, _k3, _k4, _k5, _k6);
+        const cv::Size sz(w, h);
+        const cv::Mat newK = cv::getOptimalNewCameraMatrix(K, dist, sz, _alpha, sz);
+
+        const double nfx = newK.at<double>(0,0);
+        const double nfy = newK.at<double>(1,1);
+        const double ncx = newK.at<double>(0,2);
+        const double ncy = newK.at<double>(1,2);
+
+        mapX.create(sz, CV_32FC1);
+        mapY.create(sz, CV_32FC1);
 
         for (int row = 0; row < h; ++row) {
             float* pX = mapX.ptr<float>(row);
@@ -425,11 +499,10 @@ private:
 
             for (int col = 0; col < w; ++col) {
                 if (_mode == 0) {
-                    // UNDISTORT: output is undistorted space.
-                    // Forward model: given undistorted (xu,yu) → distorted (xd,yd).
-                    // mapX/mapY = distorted source coords to sample from.
-                    const double xu = (col - cx) / fx;
-                    const double yu = (row - cy) / fy;
+                    // UNDISTORT: output pixel is in new_K space.
+                    // Forward model → distorted source coord in original K space.
+                    const double xu = (col - ncx) / nfx;
+                    const double yu = (row - ncy) / nfy;
                     const double r2 = xu*xu + yu*yu;
                     const double r4 = r2*r2, r6 = r4*r2;
                     const double denom = 1.0 + _k4*r2 + _k5*r4 + _k6*r6;
@@ -440,10 +513,9 @@ private:
                     pX[col] = static_cast<float>(xd * fx + cx);
                     pY[col] = static_cast<float>(yd * fy + cy);
                 } else {
-                    // DISTORT: output is distorted space.
-                    // We want the undistorted source coord (xu,yu) such that
-                    // forward_model(xu,yu) = (xd,yd) for this output pixel.
-                    // Solved iteratively (10 Newton steps — converges in 3-4).
+                    // DISTORT: output pixel is in original K (distorted) space.
+                    // Newton-iterate → undistorted normalised (xu,yu).
+                    // Project through new_K → source coord in undistorted image.
                     const double xd = (col - cx) / fx;
                     const double yd = (row - cy) / fy;
                     double xu = xd, yu = yd;
@@ -458,8 +530,9 @@ private:
                         xu += ex;
                         yu += ey;
                     }
-                    pX[col] = static_cast<float>(xu * fx + cx);
-                    pY[col] = static_cast<float>(yu * fy + cy);
+                    // Project undistorted normalised coords through new_K
+                    pX[col] = static_cast<float>(xu * nfx + ncx);
+                    pY[col] = static_cast<float>(yu * nfy + ncy);
                 }
             }
         }
