@@ -8,14 +8,17 @@ OpenCV-based lens distortion / undistortion node for Nuke 15+.
 - **Distort** — adds lens distortion (match a real lens)
 - Full **Brown-Conrady** rational model: k1–k6, p1, p2
 - Configurable focal length and principal point
+- **Alpha** knob — controls `getOptimalNewCameraMatrix` crop/border trade-off
+- Computed **new\_K** display — shows the effective output camera matrix
 - Nearest / Bilinear / Bicubic filter modes
 - Remap maps cached and only rebuilt when parameters change
 - **NeRFStudio JSON import** — load camera intrinsics directly from `transforms.json`
-- Self-contained: OpenCV statically linked into the DLL (no OpenCV DLLs needed on farm)
+- Self-contained: OpenCV statically linked into the DLL/SO (no runtime dependency)
+- Matches output of Python `cv2.initUndistortRectifyMap` / `cv2.undistortPoints` exactly
 
 ## Coefficients convention
 
-Matches OpenCV / ShotCalibrate / most calibration tools:
+Matches OpenCV / ShotCalibrate / NeRFStudio / most calibration tools:
 
 ```text
 k1, k2, k3  — radial numerator   (polynomial model)
@@ -35,6 +38,20 @@ radial = (1 + k1·r² + k2·r⁴ + k3·r⁶)
 k4, k5, k6 default to 0, which makes the denominator 1 and reduces the
 model to the standard polynomial form — identical behaviour to a
 5-coefficient calibration.
+
+## Alpha parameter
+
+`getOptimalNewCameraMatrix(alpha)` determines the framing of the output image:
+
+| Alpha | Effect |
+| --- | --- |
+| `0.0` | Output is cropped to the largest rectangle with no black borders |
+| `1.0` | Output retains all source pixels; corners may be black (default) |
+
+The **Computed Output Matrix (new\_K)** section in the properties panel shows
+the resulting `new_fx`, `new_fy`, `new_cx`, `new_cy` after applying alpha.
+These are the effective camera intrinsics of the output image and should be
+used for any downstream 3D projection or matchmove work.
 
 ---
 
@@ -66,7 +83,7 @@ git clone https://github.com/microsoft/vcpkg.git D:/vcpkg
 D:/vcpkg/bootstrap-vcpkg.bat
 ```
 
-### Step 2 — Set VCPKG_ROOT (once)
+### Step 2 — Set VCPKG\_ROOT (once)
 
 ```powershell
 [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", "D:/vcpkg", "User")
@@ -164,7 +181,13 @@ cmake --install build_vs2022 --prefix "C:\Program Files\Nuke17.0v1"
 
 ## Build: Linux
 
+**Required compiler: GCC 11.2.1** (VFX Platform CY2022+, mandatory for Nuke 15+).
+The preset enforces `gcc-11` / `g++-11` — configure will fail fast if not installed.
+
 ```bash
+# Install GCC 11 if needed (Ubuntu/Debian)
+sudo apt install gcc-11 g++-11
+
 # Install vcpkg (once)
 git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
 /opt/vcpkg/bootstrap-vcpkg.sh
@@ -218,17 +241,20 @@ focal_x = 0  (auto — uses image width)
 focal_y = 0  (auto — uses image height)
 center_x = 0.5
 center_y = 0.5
+alpha = 1.0  (retain all pixels; set to 0 to crop black borders)
 Mode = Undistort
 ```
 
 **Re-distort CG to match plate:**
 Set the same coefficients, switch Mode to **Distort**.
+The input image should be in the undistorted (new\_K) space —
+i.e. the output of a previous Undistort pass with the same alpha.
 
 ### NeRFStudio JSON import
 
-If you have a `transforms.json` from nerfstudio or instant-ngp:
+If you have a `transforms.json` from NeRFStudio or instant-ngp:
 
-1. In the **NeRFStudio Import** section at the bottom of the node, set **JSON File** to your `transforms.json` path
+1. In the **NeRFStudio Import** section, set **JSON File** to your `transforms.json` path
 2. Click **Load from JSON**
 
 All camera parameters are filled in automatically:
@@ -251,13 +277,13 @@ Parameters can still be edited manually after loading.
 ```text
 NukeLensDistort/
 ├── src/
-│   └── LensDistort.cpp          # Plugin source
+│   └── LensDistort.cpp                    # Plugin source
 ├── triplets/
-│   ├── x64-windows-static-md-v142.cmake  # vcpkg triplet for VS2019
-│   └── x64-windows-static-md-v143.cmake  # vcpkg triplet for VS2022
-├── CMakeLists.txt               # Build system
-├── CMakePresets.json            # Presets: windows-vs2019, windows-vs2022, linux
-├── vcpkg.json                   # vcpkg manifest (OpenCV + nlohmann-json)
+│   ├── x64-windows-static-md-v142.cmake   # vcpkg triplet for VS2019
+│   └── x64-windows-static-md-v143.cmake   # vcpkg triplet for VS2022
+├── CMakeLists.txt                         # Build system
+├── CMakePresets.json                      # Presets: windows-vs2019, windows-vs2022, linux
+├── vcpkg.json                             # vcpkg manifest (OpenCV calib3d + nlohmann-json)
 └── README.md
 ```
 
@@ -274,6 +300,15 @@ NukeLensDistort/
 - **Compiler must match Nuke's**: Using the wrong Visual Studio version causes
   C++ ABI mismatches (exception handling, vtable layout) that crash Nuke at
   node creation. Use v142 for Nuke 15, v143 for Nuke 16/17.
-- **Distort mode** uses the analytical forward Brown-Conrady rational model.
-  **Undistort mode** uses `cv::initUndistortRectifyMap` with
-  `getOptimalNewCameraMatrix` (alpha=0, no black borders).
+- **OpenCV threading**: `cv::remap` and `cv::initUndistortRectifyMap` use
+  `parallel_for_` internally which conflicts with Nuke 17's thread scheduler.
+  All pixel-level work is done in plain single-threaded C++ loops.
+  Only `cv::getOptimalNewCameraMatrix` is called from OpenCV (pure matrix math,
+  no threading).
+- **Distort mode** uses 10-iteration Newton's method to invert the
+  Brown-Conrady model. **Undistort mode** applies the forward model directly.
+  Both use `getOptimalNewCameraMatrix` with the configured alpha to determine
+  the output camera matrix, matching Python OpenCV's behaviour exactly.
+- **DLL pinning** (Windows): The plugin pins itself in memory via
+  `GetModuleHandleExW` with `GET_MODULE_HANDLE_EX_FLAG_PIN` to prevent
+  Nuke from unloading the DLL and leaving stale `Op::Description` pointers.
