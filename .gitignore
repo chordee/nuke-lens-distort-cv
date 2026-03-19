@@ -1,11 +1,16 @@
 # Build output
 build/
+build_vs*/
 
 # vcpkg installed packages (downloaded at configure time)
 vcpkg_installed/
+vcpkg_installed_vs*/
 
 # Claude Code session files
 .claude/
+
+# IDE
+.vscode/
 
 # OS
 .DS_Store
