@@ -2,31 +2,50 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "windows",
-      "displayName": "Windows Release (MSVC 2022)",
+      "name": "windows-vs2019",
+      "displayName": "Windows — VS2019 (v142)  [Nuke 15]",
+      "generator": "Visual Studio 16 2019",
+      "architecture": "x64",
+      "toolset": "v142",
+      "binaryDir": "${sourceDir}/build_vs2019",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE":   "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET":   "x64-windows-static-md-v142",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "VCPKG_MANIFEST_INSTALL": "OFF",
+        "VCPKG_INSTALLED_DIR":    "${sourceDir}/vcpkg_installed_vs2019"
+      }
+    },
+    {
+      "name": "windows-vs2022",
+      "displayName": "Windows — VS2022 (v143)  [Nuke 16/17]",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/build",
+      "toolset": "v143",
+      "binaryDir": "${sourceDir}/build_vs2022",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+        "CMAKE_TOOLCHAIN_FILE":   "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET":   "x64-windows-static-md-v143",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "VCPKG_MANIFEST_INSTALL": "OFF",
+        "VCPKG_INSTALLED_DIR":    "${sourceDir}/vcpkg_installed_vs2022"
       }
     },
     {
       "name": "linux",
       "displayName": "Linux Release (GCC/Ninja)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build",
+      "binaryDir": "${sourceDir}/build_linux",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-linux"
+        "CMAKE_BUILD_TYPE":       "Release",
+        "CMAKE_TOOLCHAIN_FILE":   "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET":   "x64-linux"
       }
     }
   ],
   "buildPresets": [
-    { "name": "windows", "configurePreset": "windows", "configuration": "Release" },
-    { "name": "linux",   "configurePreset": "linux" }
+    { "name": "windows-vs2019", "configurePreset": "windows-vs2019", "configuration": "Release" },
+    { "name": "windows-vs2022", "configurePreset": "windows-vs2022", "configuration": "Release" },
+    { "name": "linux",          "configurePreset": "linux" }
   ]
 }

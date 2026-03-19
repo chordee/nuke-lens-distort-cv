@@ -22,95 +22,79 @@ endif()
 # Find packages
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Nuke NDK — uses NukeConfig.cmake shipped inside the Nuke install
+# Nuke NDK — NukeConfig.cmake is shipped inside the Nuke install.
+# It provides the add_nuke_plugin() helper and the Nuke::NDK target,
+# which carry the correct include paths, DDImage.lib, NOMINMAX,
+# _USE_MATH_DEFINES, and other NDK requirements automatically.
 list(APPEND CMAKE_PREFIX_PATH "${NUKE_ROOT}")
-find_package(Nuke REQUIRED)          # provides Nuke::NDK target
+find_package(Nuke REQUIRED)
 
 # OpenCV — resolved via vcpkg toolchain
-find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
+find_package(OpenCV REQUIRED COMPONENTS core)
+
+# nlohmann/json — header-only, resolved via vcpkg toolchain
+find_package(nlohmann_json CONFIG REQUIRED)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Plugin target
 # ─────────────────────────────────────────────────────────────────────────────
 
-add_library(LensDistort SHARED src/LensDistort.cpp)
+# add_nuke_plugin() creates a MODULE library and handles:
+#   - Nuke include dirs and DDImage linking
+#   - PREFIX="" (no "lib" prefix)
+#   - NOMINMAX and _USE_MATH_DEFINES on Windows
+add_nuke_plugin(LensDistortCV src/LensDistort.cpp)
 
-# Nuke expects the plugin filename to match the class name exactly
-set_target_properties(LensDistort PROPERTIES
-    PREFIX  ""               # no 'lib' prefix on Linux either
-    OUTPUT_NAME "LensDistort"
-)
-
-target_include_directories(LensDistort PRIVATE
-    "${NUKE_ROOT}/include"
-    ${OpenCV_INCLUDE_DIRS}
-)
+target_include_directories(LensDistortCV PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(LensDistortCV PRIVATE nlohmann_json::nlohmann_json)
 
 # ── Windows-specific ──────────────────────────────────────────────────────────
 if(WIN32)
-    # Must match Nuke's CRT: /MD (dynamic multithreaded release)
-    # NEVER use /MT — CRT mismatch causes heap corruption
-    set_property(TARGET LensDistort PROPERTY
+    # CRT must match Nuke's runtime (/MD). add_nuke_plugin() does not set this.
+    set_property(TARGET LensDistortCV PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 
-    # Suppress warnings about std::memcpy with MSVC
-    target_compile_definitions(LensDistort PRIVATE
+    target_compile_definitions(LensDistortCV PRIVATE
         _CRT_SECURE_NO_WARNINGS
-        NOMINMAX           # prevent Windows.h min/max macros
     )
 
-    # Nuke NDK .lib for linking on Windows
-    target_link_libraries(LensDistort PRIVATE
-        "${NUKE_ROOT}/lib/DDImage.lib"
+    target_link_libraries(LensDistortCV PRIVATE
+        ws2_32 comctl32 gdi32 user32  # required by OpenCV static build
+        ${OpenCV_LIBS}
     )
 
-    # Windows system libs that OpenCV static build requires
-    target_link_libraries(LensDistort PRIVATE
-        ws2_32 comctl32 gdi32 user32
-    )
-
-    # Output directly to a deploy folder for convenience
-    set_target_properties(LensDistort PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/deploy"
+    # MODULE libraries on Windows use LIBRARY_OUTPUT_DIRECTORY, not RUNTIME
+    set_target_properties(LensDistortCV PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/deploy"
         SUFFIX ".dll"
     )
 endif()
 
 # ── Linux-specific ────────────────────────────────────────────────────────────
 if(UNIX AND NOT APPLE)
-    target_link_libraries(LensDistort PRIVATE
+    target_link_libraries(LensDistortCV PRIVATE
         "${NUKE_ROOT}/lib/libDDImage.so"
         -ldl -lm -lpthread -lz
     )
 
-    set_target_properties(LensDistort PROPERTIES
+    set_target_properties(LensDistortCV PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/deploy"
         SUFFIX ".so"
     )
 
-    # When OpenCV is static, its .a files must be position-independent
-    # (built with -DCMAKE_POSITION_INDEPENDENT_CODE=ON).
-    # --whole-archive must directly bracket the OpenCV .a files in the link
-    # command; target_link_options cannot guarantee that ordering, so pass the
-    # flags through target_link_libraries to ensure correct interleaving.
-    target_link_libraries(LensDistort PRIVATE
+    # --whole-archive ensures no symbols are stripped from OpenCV static libs
+    target_link_libraries(LensDistortCV PRIVATE
         -Wl,--whole-archive
         ${OpenCV_LIBS}
         -Wl,--no-whole-archive
     )
 endif()
 
-# ── OpenCV libs (Windows) ─────────────────────────────────────────────────────
-# On Linux, OpenCV is already linked above with --whole-archive wrapping.
-if(WIN32)
-    target_link_libraries(LensDistort PRIVATE ${OpenCV_LIBS})
-endif()
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Install
 # ─────────────────────────────────────────────────────────────────────────────
 
-install(TARGETS LensDistort
+install(TARGETS LensDistortCV
     RUNTIME DESTINATION "${NUKE_ROOT}/plugins"   # .dll on Windows
     LIBRARY DESTINATION "${NUKE_ROOT}/plugins"   # .so  on Linux
 )
@@ -120,10 +104,10 @@ install(TARGETS LensDistort
 # ─────────────────────────────────────────────────────────────────────────────
 
 message(STATUS "")
-message(STATUS "── LensDistort build config ──────────────────────")
+message(STATUS "── LensDistortCV build config ──────────────────────")
 message(STATUS "  Nuke root    : ${NUKE_ROOT}")
 message(STATUS "  OpenCV ver   : ${OpenCV_VERSION}")
 message(STATUS "  OpenCV libs  : ${OpenCV_LIBS}")
-message(STATUS "  Output       : ${CMAKE_BINARY_DIR}/deploy/LensDistort${CMAKE_SHARED_LIBRARY_SUFFIX}")
+message(STATUS "  Output       : ${CMAKE_BINARY_DIR}/deploy/LensDistortCV${CMAKE_SHARED_LIBRARY_SUFFIX}")
 message(STATUS "──────────────────────────────────────────────────")
 message(STATUS "")

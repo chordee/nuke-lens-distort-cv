@@ -1,16 +1,17 @@
-# LensDistort — Nuke NDK Plugin
+# LensDistortCV — Nuke NDK Plugin
 
-OpenCV-based lens distortion / undistortion node for Nuke 17+.
+OpenCV-based lens distortion / undistortion node for Nuke 15+.
 
 ## Features
 
 - **Undistort** — removes lens distortion (straighten footage)
 - **Distort** — adds lens distortion (match a real lens)
-- Full **Brown-Conrady** model: k1–k6, p1, p2 (rational polynomial)
+- Full **Brown-Conrady** rational model: k1–k6, p1, p2
 - Configurable focal length and principal point
 - Nearest / Bilinear / Bicubic filter modes
 - Remap maps cached and only rebuilt when parameters change
-- Self-contained: OpenCV statically linked into the DLL (no OpenCV DLLs on farm)
+- **NeRFStudio JSON import** — load camera intrinsics directly from `transforms.json`
+- Self-contained: OpenCV statically linked into the DLL (no OpenCV DLLs needed on farm)
 
 ## Coefficients convention
 
@@ -39,119 +40,168 @@ model to the standard polynomial form — identical behaviour to a
 
 ## Build: Windows
 
-OpenCV is managed by **vcpkg** — no manual compilation required.
-The `x64-windows-static-md` triplet ensures OpenCV is statically linked
-with `/MD` CRT, which matches Nuke's runtime.
+OpenCV is managed by **vcpkg** via a custom triplet that pins the exact MSVC
+toolset. This is required because Nuke's DDImage ABI must match the compiler
+used to build the plugin.
+
+| Nuke version | Visual Studio | Preset |
+| --- | --- | --- |
+| 15.x | VS 2019 (v142) | `windows-vs2019` |
+| 16.x / 17.x | VS 2022 (v143) | `windows-vs2022` |
 
 ### Prerequisites
 
 | Tool | Version |
 | --- | --- |
-| Visual Studio | 2022 (v143) — must match Nuke 17's compiler |
+| Visual Studio 2019 | for Nuke 15 |
+| Visual Studio 2022 | for Nuke 16/17 |
 | CMake | 3.20+ |
-| Nuke | 17.0v1+ (for NDK headers + DDImage.lib) |
 | vcpkg | latest |
+| Nuke | target version (for NDK headers + DDImage.lib) |
 
 ### Step 1 — Install vcpkg (once)
 
 ```powershell
-git clone https://github.com/microsoft/vcpkg.git C:/dev/vcpkg
-C:/dev/vcpkg/bootstrap-vcpkg.bat
+git clone https://github.com/microsoft/vcpkg.git D:/vcpkg
+D:/vcpkg/bootstrap-vcpkg.bat
 ```
 
 ### Step 2 — Set VCPKG_ROOT (once)
 
 ```powershell
-# Persist across sessions (recommended):
-[System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", "C:/dev/vcpkg", "User")
-
-# Or for the current session only:
-$env:VCPKG_ROOT = "C:/dev/vcpkg"
+[System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", "D:/vcpkg", "User")
+# Restart your terminal after this
 ```
 
-### Step 3 — Configure
+### Step 3 — Install OpenCV (once per toolset)
 
-`NUKE_ROOT` is required and must be passed explicitly.
-vcpkg reads `vcpkg.json` and automatically downloads + compiles OpenCV.
+vcpkg packages must be pre-installed into separate directories — one per
+toolset — because each preset uses `VCPKG_MANIFEST_INSTALL=OFF` to avoid
+running vcpkg again during CMake configure.
 
 ```powershell
 cd NukeLensDistort
-cmake --preset windows -DNUKE_ROOT="C:/Program Files/Nuke17.0v1"
+
+# For Nuke 15 (VS2019 / v142)
+vcpkg install --triplet x64-windows-static-md-v142 `
+              --overlay-triplets triplets `
+              --x-install-root vcpkg_installed_vs2019
+
+# For Nuke 16/17 (VS2022 / v143)
+vcpkg install --triplet x64-windows-static-md-v143 `
+              --overlay-triplets triplets `
+              --x-install-root vcpkg_installed_vs2022
 ```
 
-### Step 4 — Build
+> **Note:** The first run compiles OpenCV from source (~2–3 min per toolset).
+> Subsequent runs restore from the local binary cache in seconds.
+
+### Step 4 — Configure
+
+`NUKE_ROOT` must be passed explicitly. The preset selects the compiler and
+vcpkg installed directory automatically.
 
 ```powershell
-cmake --build --preset windows
+# Nuke 15
+cmake --preset windows-vs2019 -DNUKE_ROOT="C:/Program Files/Nuke15.1v5"
+
+# Nuke 16/17
+cmake --preset windows-vs2022 -DNUKE_ROOT="C:/Program Files/Nuke17.0v1"
 ```
 
-Output: `build/deploy/LensDistort.dll`
-
-### Step 5 — Verify no OpenCV runtime deps
+### Step 5 — Build
 
 ```powershell
-# In VS 2022 Developer Command Prompt (x64):
-dumpbin /dependents build\deploy\LensDistort.dll | findstr opencv
-# Should return nothing — OpenCV is baked in
+cmake --build --preset windows-vs2019
+# or
+cmake --build --preset windows-vs2022
 ```
 
-### Step 6 — Deploy
+Output:
 
-Copy `LensDistort.dll` to your Nuke plugin path:
+- `build_vs2019\deploy\Release\LensDistortCV.dll`
+- `build_vs2022\deploy\Release\LensDistortCV.dll`
 
-```text
-%USERPROFILE%/.nuke/plugins/LensDistort.dll
+### Step 6 — Install
+
+Choose **one** of the following methods.
+
+---
+
+#### Method A — Personal install (recommended for single user)
+
+```powershell
+# Nuke 15
+Copy-Item build_vs2019\deploy\Release\LensDistortCV.dll "$env:USERPROFILE\.nuke\"
+
+# Nuke 16/17
+Copy-Item build_vs2022\deploy\Release\LensDistortCV.dll "$env:USERPROFILE\.nuke\"
 ```
 
-Or set `NUKE_PATH` to the folder containing the DLL.
+---
+
+#### Method B — Studio shared install (multiple users, network path)
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "NUKE_PATH", "\\server\nuke_plugins", "Machine")
+
+Copy-Item build_vs2022\deploy\Release\LensDistortCV.dll \\server\nuke_plugins\
+```
+
+`NUKE_PATH` accepts multiple paths separated by semicolons (`;`).
+
+---
+
+#### Method C — System install into the Nuke directory (requires admin)
+
+```powershell
+# Run PowerShell as Administrator
+cmake --install build_vs2022 --prefix "C:\Program Files\Nuke17.0v1"
+```
 
 ---
 
 ## Build: Linux
 
-OpenCV is also managed by vcpkg. The `x64-linux` triplet builds static,
-PIC-enabled libraries.
-
-### Prerequisites (Linux)
-
-| Tool | Version |
-| --- | --- |
-| GCC or Clang | C++17-capable |
-| CMake | 3.20+ |
-| Ninja | any |
-| Nuke | 15.0v1+ |
-| vcpkg | latest |
-
-### Steps
-
 ```bash
 # Install vcpkg (once)
 git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
 /opt/vcpkg/bootstrap-vcpkg.sh
+export VCPKG_ROOT=/opt/vcpkg   # add to ~/.bashrc
 
-# Set VCPKG_ROOT (add to ~/.bashrc for persistence)
-export VCPKG_ROOT=/opt/vcpkg
-
-# Configure — NUKE_ROOT is required
+# Install OpenCV (once)
 cd NukeLensDistort
+vcpkg install --triplet x64-linux --x-install-root vcpkg_installed_linux
+
+# Configure and build
 cmake --preset linux -DNUKE_ROOT=/usr/local/Nuke17.0v1
-
-# Build
 cmake --build --preset linux
-
-# Verify — should print nothing
-ldd build/deploy/LensDistort.so | grep opencv
 ```
 
-Output: `build/deploy/LensDistort.so`
+Output: `build_linux/deploy/LensDistortCV.so`
+
+### Install (Linux)
+
+```bash
+# Personal
+mkdir -p ~/.nuke && cp build_linux/deploy/LensDistortCV.so ~/.nuke/
+
+# Studio shared
+export NUKE_PATH="/studio/nuke_plugins:$NUKE_PATH"
+cp build_linux/deploy/LensDistortCV.so /studio/nuke_plugins/
+
+# System (requires sudo)
+sudo cmake --install build_linux --prefix /usr/local/Nuke17.0v1
+```
 
 ---
 
 ## Usage in Nuke
 
-1. Place `LensDistort.dll` / `LensDistort.so` in your `NUKE_PATH`
-2. Create node: **Tab** → type `LensDistort`
-3. Found under **Filter > LensDistort** in the node menu
+1. Launch Nuke — the plugin loads automatically from your plugin path
+2. Create node: **Tab** → type `LensDistortCV`
+3. Or find it in the menu: **Filter → LensDistortCV**
 
 ### Typical workflow
 
@@ -161,20 +211,38 @@ Output: `build/deploy/LensDistort.so`
 k1 = -0.28   (from calibration)
 k2 =  0.07
 k3 =  0.0
-k4 =  0.0    (leave at 0 if calibration tool only outputs k1–k3)
-k5 =  0.0
-k6 =  0.0
+k4–k6 = 0.0  (leave at 0 unless using rational model)
 p1 =  0.001
 p2 = -0.0005
-focal_x = 0  (auto)
-focal_y = 0  (auto)
+focal_x = 0  (auto — uses image width)
+focal_y = 0  (auto — uses image height)
 center_x = 0.5
 center_y = 0.5
-mode = Undistort
+Mode = Undistort
 ```
 
 **Re-distort CG to match plate:**
-Set the same coefficients, switch mode to **Distort**.
+Set the same coefficients, switch Mode to **Distort**.
+
+### NeRFStudio JSON import
+
+If you have a `transforms.json` from nerfstudio or instant-ngp:
+
+1. In the **NeRFStudio Import** section at the bottom of the node, set **JSON File** to your `transforms.json` path
+2. Click **Load from JSON**
+
+All camera parameters are filled in automatically:
+
+| JSON field | Plugin knob | Conversion |
+| --- | --- | --- |
+| `fl_x` | Focal X | direct |
+| `fl_y` | Focal Y | direct |
+| `k1`–`k4` | k1–k4 | direct (OpenCV convention) |
+| `p1`, `p2` | p1, p2 | direct |
+| `cx / w` | Principal Point X | normalised to 0–1 |
+| `cy / h` | Principal Point Y | normalised to 0–1 |
+
+Parameters can still be edited manually after loading.
 
 ---
 
@@ -183,10 +251,13 @@ Set the same coefficients, switch mode to **Distort**.
 ```text
 NukeLensDistort/
 ├── src/
-│   └── LensDistort.cpp     # Plugin source
-├── CMakeLists.txt          # Build system
-├── CMakePresets.json       # Platform presets (Windows / Linux)
-├── vcpkg.json              # vcpkg manifest — declares OpenCV dependency
+│   └── LensDistort.cpp          # Plugin source
+├── triplets/
+│   ├── x64-windows-static-md-v142.cmake  # vcpkg triplet for VS2019
+│   └── x64-windows-static-md-v143.cmake  # vcpkg triplet for VS2022
+├── CMakeLists.txt               # Build system
+├── CMakePresets.json            # Presets: windows-vs2019, windows-vs2022, linux
+├── vcpkg.json                   # vcpkg manifest (OpenCV + nlohmann-json)
 └── README.md
 ```
 
@@ -194,14 +265,15 @@ NukeLensDistort/
 
 ## Notes
 
-- **Remap maps are cached** — only rebuilt when knob values or image format changes.
-  Scrubbing timeline with fixed coefficients is fast.
+- **Remap maps are cached** — only rebuilt when knob values or image format
+  changes. Scrubbing the timeline with fixed coefficients is fast.
 - **Y-flip**: Nuke is bottom-up (row 0 = bottom); OpenCV is top-down.
-  The plugin handles this transparently during copy in/out.
-- **CRT**: Always compiled with `/MD` (dynamic CRT) to match Nuke's runtime.
+  The plugin handles this transparently.
+- **CRT**: Always compiled with `/MD` to match Nuke's runtime.
   Never use `/MT` — it causes heap corruption.
-- **Distort mode** uses the analytical forward Brown-Conrady rational model directly.
-  Undistort mode uses `cv::initUndistortRectifyMap` with `getOptimalNewCameraMatrix`
-  (alpha=0, no black borders). Both modes support the full 8-coefficient rational
-  model (k1–k6, p1, p2); setting k4=k5=k6=0 is equivalent to a 5-coefficient
-  polynomial calibration.
+- **Compiler must match Nuke's**: Using the wrong Visual Studio version causes
+  C++ ABI mismatches (exception handling, vtable layout) that crash Nuke at
+  node creation. Use v142 for Nuke 15, v143 for Nuke 16/17.
+- **Distort mode** uses the analytical forward Brown-Conrady rational model.
+  **Undistort mode** uses `cv::initUndistortRectifyMap` with
+  `getOptimalNewCameraMatrix` (alpha=0, no black borders).
