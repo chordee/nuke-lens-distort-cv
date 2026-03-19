@@ -1,0 +1,12 @@
+# Build output
+build/
+
+# vcpkg installed packages (downloaded at configure time)
+vcpkg_installed/
+
+# Claude Code session files
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

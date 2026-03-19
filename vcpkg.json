@@ -1,0 +1,11 @@
+{
+  "name": "nuke-lens-distort",
+  "version": "1.0.0",
+  "dependencies": [
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["imgproc", "calib3d"]
+    }
+  ]
+}
