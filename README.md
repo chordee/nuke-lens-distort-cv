@@ -8,6 +8,7 @@ OpenCV-based lens distortion / undistortion node for Nuke 15+.
 - **Distort** — adds lens distortion (match a real lens)
 - Full **Brown-Conrady** rational model: k1–k6, p1, p2
 - Configurable focal length and principal point
+- **Native resolution** knobs — focal lengths auto-scale when applying calibration data to a different resolution
 - **Alpha** knob — controls `getOptimalNewCameraMatrix` crop/border trade-off
 - Computed **new\_K** display — shows the effective output camera matrix
 - Nearest / Bilinear / Bicubic filter modes
@@ -241,9 +242,19 @@ focal_x = 0  (auto — uses image width)
 focal_y = 0  (auto — uses image height)
 center_x = 0.5
 center_y = 0.5
+native_w = 0  (0 = disabled; set to calibration width if focal_x is explicit)
+native_h = 0  (0 = disabled; set to calibration height if focal_y is explicit)
 alpha = 1.0  (retain all pixels; set to 0 to crop black borders)
 Mode = Undistort
 ```
+
+**Applying calibration data to a different resolution:**
+
+If the coefficients were measured at 1280×720 but your plate is 2560×1440,
+set `native_w = 1280` and `native_h = 720`. The plugin scales the focal
+lengths automatically (`fx = focal_x × current_w / native_w`). Principal
+point (`center_x` / `center_y`) is stored as a 0–1 fraction and scales
+correctly on its own.
 
 **Re-distort CG to match plate:**
 Set the same coefficients, switch Mode to **Distort**.
@@ -267,6 +278,8 @@ All camera parameters are filled in automatically:
 | `p1`, `p2` | p1, p2 | direct |
 | `cx / w` | Principal Point X | normalised to 0–1 |
 | `cy / h` | Principal Point Y | normalised to 0–1 |
+| `w` | Native Width | calibration image width (pixels) |
+| `h` | Native Height | calibration image height (pixels) |
 
 Parameters can still be edited manually after loading.
 
