@@ -89,6 +89,11 @@ class LensDistort : public Iop
     // NeRFStudio JSON import
     const char* _jsonFile;
 
+    // Native (calibration) resolution — used to scale focal lengths when the
+    // current image differs from the resolution the coefficients were measured at.
+    // 0 = disabled (treat focal_x/focal_y as absolute pixels at current res).
+    int _nativeW, _nativeH;
+
     // Computed optimal new camera matrix (filled in _validate, displayed read-only)
     double _newFx, _newFy, _newCx, _newCy;
 
@@ -109,6 +114,7 @@ public:
         , _filter(1)
         , _alpha(1.0)
         , _jsonFile("")
+        , _nativeW(0), _nativeH(0)
         , _newFx(0), _newFy(0), _newCx(0), _newCy(0)
         , _isFirstTime(true)
     {}
@@ -164,6 +170,23 @@ public:
         Tooltip(f, "Principal point Y, top-down fraction (0.5 = center).\n"
                    "Matches OpenCV convention: cy / image_height (top-down).\n"
                    "Note: opposite to Nuke's native bottom-up Y direction.");
+
+        Divider(f, "Native (Calibration) Resolution");
+
+        Int_knob(f, &_nativeW, "native_w", "Native Width");
+        SetRange(f, 0, 8192);
+        Tooltip(f, "Width of the image the camera was calibrated at (pixels).\n"
+                   "When set, focal_x is automatically scaled to the current image width:\n"
+                   "  fx = focal_x * (current_w / native_w)\n"
+                   "Set 0 to disable scaling (focal_x is used as-is).\n"
+                   "Loaded automatically from transforms.json 'w' field.");
+        Int_knob(f, &_nativeH, "native_h", "Native Height");
+        SetRange(f, 0, 8192);
+        Tooltip(f, "Height of the image the camera was calibrated at (pixels).\n"
+                   "When set, focal_y is automatically scaled to the current image height:\n"
+                   "  fy = focal_y * (current_h / native_h)\n"
+                   "Set 0 to disable scaling (focal_y is used as-is).\n"
+                   "Loaded automatically from transforms.json 'h' field.");
 
         Divider(f, "Filtering");
 
@@ -224,8 +247,8 @@ public:
         const int w = info_.w();
         const int h = info_.h();
         if (w > 0 && h > 0) {
-            const double fx = (_focalX > 0.0) ? _focalX : static_cast<double>(w);
-            const double fy = (_focalY > 0.0) ? _focalY : static_cast<double>(h);
+            double fx, fy;
+            _effectiveFocal(w, h, fx, fy);
             const double cx = _centerX * w;
             const double cy = _centerY * h;
             const cv::Mat K    = (cv::Mat_<double>(3,3) << fx,0,cx, 0,fy,cy, 0,0,1);
@@ -299,6 +322,28 @@ public:
     }
 
 private:
+    // ── _effectiveFocal ───────────────────────────────────────────────────────
+    // Returns (fx, fy) in pixels for the *current* image size (w x h).
+    // If native_w/native_h > 0 and explicit focal knob is set, the value is
+    // scaled proportionally from the calibration resolution to the current one.
+    void _effectiveFocal(int w, int h, double& fx, double& fy) const
+    {
+        if (_focalX > 0.0) {
+            const double scale = (_nativeW > 0)
+                ? static_cast<double>(w) / _nativeW : 1.0;
+            fx = _focalX * scale;
+        } else {
+            fx = static_cast<double>(w);
+        }
+        if (_focalY > 0.0) {
+            const double scale = (_nativeH > 0)
+                ? static_cast<double>(h) / _nativeH : 1.0;
+            fy = _focalY * scale;
+        } else {
+            fy = static_cast<double>(h);
+        }
+    }
+
     // ── _loadFromJson ─────────────────────────────────────────────────────────
     // Parses a nerfstudio transforms.json and updates camera parameter knobs.
     // JSON convention (instant-ngp / nerfstudio):
@@ -345,6 +390,11 @@ private:
         const double cy = j.value("cy", 0.0);
         if (w > 0.0) if (Knob* k = knob("center_x")) k->set_value(cx / w);
         if (h > 0.0) if (Knob* k = knob("center_y")) k->set_value(cy / h);
+
+        // Store the calibration resolution so focal lengths can be scaled when
+        // the plugin is applied to a different image resolution.
+        if (w > 0.0) if (Knob* k = knob("native_w")) k->set_value(w);
+        if (h > 0.0) if (Knob* k = knob("native_h")) k->set_value(h);
     }
 
     // ── Sampling helpers (no cv::remap — avoids OpenCV thread pool) ───────────
@@ -432,8 +482,8 @@ private:
     {
         _outputCache.clear();
 
-        const double fx = (_focalX > 0.0) ? _focalX : static_cast<double>(w);
-        const double fy = (_focalY > 0.0) ? _focalY : static_cast<double>(h);
+        double fx, fy;
+        _effectiveFocal(w, h, fx, fy);
         const double cx = _centerX * w;
         const double cy = _centerY * h;
 
