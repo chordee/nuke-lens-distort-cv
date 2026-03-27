@@ -55,6 +55,7 @@ namespace {
 #include "DDImage/Tile.h"
 #include "DDImage/Knobs.h"
 #include "DDImage/Thread.h"
+#include "DDImage/Format.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>   // getOptimalNewCameraMatrix, fisheye::* — no parallel_for_
@@ -121,6 +122,10 @@ class LensDistort : public Iop
 
     // Computed optimal new camera matrix (filled in _validate, displayed read-only)
     double _newFx, _newFy, _newCx, _newCy;
+
+    // Persistent output format for expand mode.
+    // Must outlive _validate() because info_.format() stores a pointer to it.
+    Format _outputFmt;
 
     // Full-frame output cache, one cv::Mat per channel
     Lock                       _lock;
@@ -368,6 +373,11 @@ public:
                     out_h = (_origH > 0) ? _origH : inH;
                 }
             }
+            // Update both the format window (full canvas) and the data window.
+            // _outputFmt is a class member so its lifetime outlasts _validate();
+            // info_.format() stores a pointer, so a local Format would dangle.
+            _outputFmt = Format(out_w, out_h, 1.0f);
+            info_.format(_outputFmt);
             info_.set(0, 0, out_w, out_h);
         }
 
