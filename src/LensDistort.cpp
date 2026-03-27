@@ -62,6 +62,7 @@ namespace {
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -128,9 +129,9 @@ class LensDistort : public Iop
     Format _outputFmt;
 
     // Full-frame output cache, one cv::Mat per channel
-    Lock                       _lock;
-    bool                       _isFirstTime;
-    std::map<Channel, cv::Mat> _outputCache;   // top-down float32
+    Lock                            _lock;
+    std::atomic<bool>               _isFirstTime;
+    std::map<Channel, cv::Mat>      _outputCache;   // top-down float32
 
 public:
     explicit LensDistort(Node* node)
@@ -392,13 +393,17 @@ public:
             info_.set(0, 0, out_w, out_h);
         }
 
-        const int w = info_.w();
-        const int h = info_.h();
-        if (w > 0 && h > 0) {
+        // For the new_K display, we need K_new at its own canvas size.
+        // In undistort (or standard): K_new canvas = output → use info_.w()/h().
+        // In distort expand:          K_new canvas = input  → use input info.
+        const bool expandMode2 = (_origW > 0 && _origH > 0);
+        const int kNewDispW = (expandMode2 && _mode != 0) ? input(0)->info().w() : info_.w();
+        const int kNewDispH = (expandMode2 && _mode != 0) ? input(0)->info().h() : info_.h();
+        if (kNewDispW > 0 && kNewDispH > 0) {
             double fx, fy;
-            _effectiveFocal(w, h, fx, fy);
-            const double cx = _centerX * w;
-            const double cy = _centerY * h;
+            _effectiveFocal(kNewDispW, kNewDispH, fx, fy);
+            const double cx = _centerX * kNewDispW;
+            const double cy = _centerY * kNewDispH;
             const cv::Mat K = (cv::Mat_<double>(3,3) << fx,0,cx, 0,fy,cy, 0,0,1);
 
             cv::Mat newK;
@@ -407,7 +412,7 @@ public:
                 // This is pure matrix math (no parallel_for_), safe to call in Nuke.
                 const cv::Mat D_fish = (cv::Mat_<double>(4,1) << _k1, _k2, _p1, _p2);
                 cv::fisheye::estimateNewCameraMatrixForUndistortRectify(
-                    K, D_fish, cv::Size(w, h), cv::Mat::eye(3,3,CV_64F), newK, _alpha);
+                    K, D_fish, cv::Size(kNewDispW, kNewDispH), cv::Mat::eye(3,3,CV_64F), newK, _alpha);
             } else {
                 // Perspective: new_K = K (matches Python K.copy() behaviour).
                 // alpha has no effect in perspective mode.
