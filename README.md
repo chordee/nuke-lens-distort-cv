@@ -7,15 +7,17 @@ OpenCV-based lens distortion / undistortion node for Nuke 15+.
 - **Undistort** — removes lens distortion (straighten footage)
 - **Distort** — adds lens distortion (match a real lens)
 - Full **Brown-Conrady** rational model: k1–k6, p1, p2
+- **Fisheye model** — OpenCV equidistant (equidistant) fisheye: k1/k2 + fisheye k3/k4 (via p1/p2 knobs)
 - Configurable focal length and principal point
 - **Native resolution** knobs — focal lengths auto-scale when applying calibration data to a different resolution
-- **Alpha** knob — controls `getOptimalNewCameraMatrix` crop/border trade-off
+- **Expand mode** — two-JSON workflow that maps between two different canvas sizes (e.g. original distorted ↔ undistorted expanded canvas)
+- **Alpha** knob — fisheye balance parameter for `estimateNewCameraMatrixForUndistortRectify`
 - Computed **new\_K** display — shows the effective output camera matrix
 - Nearest / Bilinear / Bicubic filter modes
 - Remap maps cached and only rebuilt when parameters change
-- **NeRFStudio JSON import** — load camera intrinsics directly from `transforms.json`
+- **NeRFStudio JSON import** — load camera intrinsics from one or two `transforms.json` files
 - Self-contained: OpenCV statically linked into the DLL/SO (no runtime dependency)
-- Matches output of Python `cv2.initUndistortRectifyMap` / `cv2.undistortPoints` exactly
+- Matches output of Python `cv2.initUndistortRectifyMap` / `cv2.undistortPoints` / `cv2.fisheye.*` exactly
 
 ## Coefficients convention
 
@@ -40,19 +42,37 @@ k4, k5, k6 default to 0, which makes the denominator 1 and reduces the
 model to the standard polynomial form — identical behaviour to a
 5-coefficient calibration.
 
-## Alpha parameter
+## Fisheye model
 
-`getOptimalNewCameraMatrix(alpha)` determines the framing of the output image:
+When **Fisheye Model** is enabled, the plugin uses OpenCV's equidistant fisheye model:
+
+```text
+theta_d = theta × (1 + k1·θ² + k2·θ⁴ + k3·θ⁶ + k4·θ⁸)
+```
+
+Coefficient mapping from knobs to fisheye model:
+
+| Knob | Fisheye role |
+| --- | --- |
+| k1 | fisheye k1 |
+| k2 | fisheye k2 |
+| p1 | fisheye k3 |
+| p2 | fisheye k4 |
+| k3–k6 | ignored |
+
+The **Alpha** knob controls `estimateNewCameraMatrixForUndistortRectify`:
 
 | Alpha | Effect |
 | --- | --- |
-| `0.0` | Output is cropped to the largest rectangle with no black borders |
-| `1.0` | Output retains all source pixels; corners may be black (default) |
+| `0.0` | Crop to avoid black borders |
+| `1.0` | Retain all source pixels; corners may be black (default) |
 
-The **Computed Output Matrix (new\_K)** section in the properties panel shows
-the resulting `new_fx`, `new_fy`, `new_cx`, `new_cy` after applying alpha.
-These are the effective camera intrinsics of the output image and should be
-used for any downstream 3D projection or matchmove work.
+In **perspective mode**, Alpha has no effect — the output camera matrix equals
+the input K directly (matching Python's `K.copy()` behaviour).
+
+The **Computed Output Matrix (new\_K)** section shows `new_fx`, `new_fy`,
+`new_cx`, `new_cy` — the effective intrinsics of the output image, useful
+for downstream 3D projection or matchmove work.
 
 ---
 
@@ -263,10 +283,16 @@ i.e. the output of a previous Undistort pass with the same alpha.
 
 ### NeRFStudio JSON import
 
-If you have a `transforms.json` from NeRFStudio or instant-ngp:
+Camera parameters can be loaded from `transforms.json` files produced by
+NeRFStudio, instant-ngp, or the
+[AI\_colmap\_camera\_tracking](https://github.com/chordee/AI_colmap_camera_tracking)
+pipeline. Manual entry of all knobs is equally supported — the JSON buttons
+are a convenience shortcut.
 
-1. In the **NeRFStudio Import** section, set **JSON File** to your `transforms.json` path
-2. Click **Load from JSON**
+#### Standard mode (single JSON)
+
+1. Set **Original JSON** to your `transforms.json`
+2. Click **Load from JSON(s)**
 
 All camera parameters are filled in automatically:
 
@@ -276,12 +302,41 @@ All camera parameters are filled in automatically:
 | `fl_y` | Focal Y | direct |
 | `k1`–`k4` | k1–k4 | direct (OpenCV convention) |
 | `p1`, `p2` | p1, p2 | direct |
+| `is_fisheye` | Fisheye Model | direct |
 | `cx / w` | Principal Point X | normalised to 0–1 |
 | `cy / h` | Principal Point Y | normalised to 0–1 |
 | `w` | Native Width | calibration image width (pixels) |
 | `h` | Native Height | calibration image height (pixels) |
 
-Parameters can still be edited manually after loading.
+#### Expand mode (two JSONs)
+
+Some workflows produce a distorted image at one canvas size and an undistorted
+image at a larger canvas (the undistorted canvas is expanded to avoid cropping
+any source pixels). The AI\_colmap\_camera\_tracking pipeline generates this
+pair as `*_transforms.json` (original) and
+`undistort/transforms_undistorted.json` (expanded).
+
+1. Set **Original JSON** to the original (distorted) `*_transforms.json`
+2. Set **Undistorted JSON** to the expanded `transforms_undistorted.json`
+3. Click **Load from JSON(s)**
+
+The button loads both files in the correct order:
+- K\_new intrinsics (focal, principal point, native canvas) ← undistorted JSON
+- K\_orig intrinsics + distortion coefficients ← original JSON (overrides any zeroed values from the undistorted JSON)
+
+In expand mode the node changes its output format dynamically:
+
+| Mode | Input | Output |
+| --- | --- | --- |
+| Undistort | K\_orig canvas (distorted, smaller) | K\_new canvas (undistorted, larger) |
+| Distort | K\_new canvas (undistorted, larger) | K\_orig canvas (distorted, smaller) |
+
+Proportional scaling is applied automatically when the connected image
+resolution differs from the calibration reference size.
+
+> **Note:** Expand mode is perspective-only. Fisheye does not support two-canvas workflows.
+
+Parameters can always be edited manually after loading.
 
 ---
 
@@ -313,15 +368,20 @@ NukeLensDistort/
 - **Compiler must match Nuke's**: Using the wrong Visual Studio version causes
   C++ ABI mismatches (exception handling, vtable layout) that crash Nuke at
   node creation. Use v142 for Nuke 15, v143 for Nuke 16/17.
-- **OpenCV threading**: `cv::remap` and `cv::initUndistortRectifyMap` use
-  `parallel_for_` internally which conflicts with Nuke 17's thread scheduler.
-  All pixel-level work is done in plain single-threaded C++ loops.
-  Only `cv::getOptimalNewCameraMatrix` is called from OpenCV (pure matrix math,
-  no threading).
-- **Distort mode** uses 10-iteration Newton's method to invert the
-  Brown-Conrady model. **Undistort mode** applies the forward model directly.
-  Both use `getOptimalNewCameraMatrix` with the configured alpha to determine
-  the output camera matrix, matching Python OpenCV's behaviour exactly.
+- **OpenCV threading**: `cv::remap`, `cv::initUndistortRectifyMap`, and
+  `cv::fisheye::initUndistortRectifyMap` use `parallel_for_` internally, which
+  conflicts with Nuke 17's thread scheduler and causes crashes. All pixel-level
+  work is done in plain single-threaded C++ loops. Only
+  `cv::fisheye::estimateNewCameraMatrixForUndistortRectify` is called from
+  OpenCV (pure matrix math, no threading).
+- **Perspective distort** uses 10-iteration Newton's method to invert the
+  Brown-Conrady model. **Perspective undistort** applies the forward model
+  directly. The output camera matrix equals K (matching Python's `K.copy()`
+  behaviour); the Alpha knob has no effect in perspective mode.
+- **Fisheye distort** uses Newton iteration on θ to invert the equidistant
+  model. **Fisheye undistort** applies the forward θ model directly.
+  The output camera matrix is computed by
+  `estimateNewCameraMatrixForUndistortRectify` with the configured Alpha.
 - **DLL pinning** (Windows): The plugin pins itself in memory via
   `GetModuleHandleExW` with `GET_MODULE_HANDLE_EX_FLAG_PIN` to prevent
   Nuke from unloading the DLL and leaving stale `Op::Description` pointers.
