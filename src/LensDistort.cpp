@@ -104,8 +104,9 @@ class LensDistort : public Iop
     // perspective: unused (new_K = K directly, matching Python K.copy() behaviour)
     double _alpha;
 
-    // NeRFStudio JSON import
-    const char* _jsonFile;
+    // NeRFStudio JSON paths (knob IDs match Python --original_json / --undistorted_json)
+    const char* _origJsonFile;    // required: original (distorted) transforms.json
+    const char* _undistJsonFile;  // optional: undistorted transforms_undistorted.json
 
     // Native (calibration) resolution for K_new — used to scale focal lengths.
     // 0 = disabled (treat focal_x/focal_y as absolute pixels at current res).
@@ -118,7 +119,6 @@ class LensDistort : public Iop
     double _origFocalX, _origFocalY;
     double _origCenterX, _origCenterY;
     int    _origW, _origH;
-    const char* _origJsonFile;
 
     // Computed optimal new camera matrix (filled in _validate, displayed read-only)
     double _newFx, _newFy, _newCx, _newCy;
@@ -144,12 +144,12 @@ public:
         , _centerX(0.5), _centerY(0.5)
         , _filter(1)
         , _alpha(1.0)
-        , _jsonFile("")
+        , _origJsonFile("")
+        , _undistJsonFile("")
         , _nativeW(0), _nativeH(0)
         , _origFocalX(0), _origFocalY(0)
         , _origCenterX(0.5), _origCenterY(0.5)
         , _origW(0), _origH(0)
-        , _origJsonFile("")
         , _newFx(0), _newFy(0), _newCx(0), _newCy(0)
         , _isFirstTime(true)
     {}
@@ -270,28 +270,31 @@ public:
 
         Divider(f, "NeRFStudio Import");
 
-        File_knob(f, &_jsonFile, "json_file", "Primary JSON");
-        Tooltip(f, "Standard mode: path to a single nerfstudio transforms.json.\n"
-                   "Expand mode: path to the UNDISTORTED transforms_undistorted.json\n"
-                   "  (K_new canvas geometry; distortion coefficients zeroed).\n"
-                   "Fields loaded: fl_x/fl_y, k1\xe2\x80\x93k4, p1, p2,\n"
-                   "cx/w, cy/h, w/h, is_fisheye.");
-
-        File_knob(f, &_origJsonFile, "orig_json_file", "Original JSON");
-        Tooltip(f, "Expand mode only: path to the ORIGINAL (distorted) transforms.json.\n"
+        File_knob(f, &_origJsonFile, "original_json", "Original JSON");
+        Tooltip(f, "Path to the original (distorted) transforms.json.\n"
                    "Corresponds to Python --original_json.\n"
-                   "When set, Load button additionally fills K_orig parameters\n"
-                   "and overrides distortion coefficients with real values.\n"
-                   "Leave empty for standard (non-expand) mode.\n"
+                   "Required for all modes:\n"
+                   "  Standard mode: fills all camera knobs (focal, center, distortion).\n"
+                   "  Expand mode:   fills K_orig knobs and distortion coefficients.\n"
+                   "Fields loaded: fl_x/fl_y, k1\xe2\x80\x93k4, p1, p2, cx/w, cy/h, w/h, is_fisheye.");
+
+        File_knob(f, &_undistJsonFile, "undistorted_json", "Undistorted JSON");
+        Tooltip(f, "Path to the undistorted transforms_undistorted.json.\n"
+                   "Corresponds to Python --undistorted_json.\n"
+                   "Optional — leave empty for standard (non-expand) mode.\n"
+                   "When set, activates expand mode:\n"
+                   "  fills K_new canvas knobs (focal, center, native_w/h).\n"
+                   "  Distortion coefficients come from Original JSON, not this file.\n"
                    "Note: expand mode is perspective-only (not fisheye).");
 
         Button(f, "load_json", "Load from JSON(s)");
         Tooltip(f, "Load camera parameters from the JSON file(s) above.\n"
-                   "Always loads Primary JSON first (K_new / focal / distortion).\n"
-                   "If Original JSON is also set, loads it second:\n"
-                   "  fills K_orig knobs and OVERRIDES distortion coefficients\n"
-                   "  with the real values from the original camera.\n"
-                   "Using a single button guarantees correct load order.");
+                   "Standard mode (Original JSON only):\n"
+                   "  fills focal/center/native and distortion from Original JSON.\n"
+                   "Expand mode (both JSONs set):\n"
+                   "  fills K_orig knobs + distortion from Original JSON,\n"
+                   "  then fills K_new knobs (focal/center/native) from Undistorted JSON.\n"
+                   "Single button guarantees correct load order.");
 
         Divider(f, "Original Camera Parameters (Expand Mode)");
 
@@ -323,12 +326,20 @@ public:
     int knob_changed(Knob* k) override
     {
         if (k->is("load_json")) {
-            // Always load primary JSON first, then original JSON (if set) second.
-            // This guarantees K_orig and real distortion coefficients override
-            // any zeroed values that may have come from the undistorted JSON.
-            _loadFromJson();
-            if (_origJsonFile && *_origJsonFile)
-                _loadOrigJson();
+            const bool hasOrig   = (_origJsonFile   && *_origJsonFile);
+            const bool hasUndist = (_undistJsonFile  && *_undistJsonFile);
+
+            if (hasOrig && hasUndist) {
+                // Expand mode: undistorted JSON → K_new; original JSON → K_orig + distortion
+                _loadKnewFromJson(_undistJsonFile);
+                _loadKorigFromJson(_origJsonFile);
+            } else if (hasOrig) {
+                // Standard mode: original JSON → all primary knobs (K_new + distortion)
+                _loadKnewFromJson(_origJsonFile);
+                // Disable expand mode by clearing orig_w/h
+                if (Knob* kw = knob("orig_w")) kw->set_value(0);
+                if (Knob* kh = knob("orig_h")) kh->set_value(0);
+            }
             return 1;
         }
         return Iop::knob_changed(k);
@@ -508,14 +519,17 @@ private:
         ocy = _origCenterY * inH;
     }
 
-    // ── _loadFromJson ─────────────────────────────────────────────────────────
-    // Parses a nerfstudio transforms.json and updates camera parameter knobs.
-    // In expand mode: load the UNDISTORTED JSON here (K_new canvas geometry).
-    void _loadFromJson()
+    // ── _loadKnewFromJson ─────────────────────────────────────────────────────
+    // Parses a nerfstudio transforms.json and fills K_new (primary camera knobs):
+    //   focal_x/y, center_x/y, native_w/h, is_fisheye, and distortion coefficients.
+    // Standard mode: called with the original JSON (fills everything).
+    // Expand mode:   called with the undistorted JSON (K_new canvas only; distortion
+    //                is ignored because it's typically zeroed out in undistorted JSON).
+    void _loadKnewFromJson(const char* file)
     {
-        if (!_jsonFile || !*_jsonFile) return;
+        if (!file || !*file) return;
 
-        std::ifstream ifs(_jsonFile);
+        std::ifstream ifs(file);
         if (!ifs.is_open()) return;
 
         nlohmann::json j;
@@ -564,15 +578,16 @@ private:
         if (h > 0.0) if (Knob* k = knob("native_h")) k->set_value(h);
     }
 
-    // ── _loadOrigJson ─────────────────────────────────────────────────────────
+    // ── _loadKorigFromJson ────────────────────────────────────────────────────
     // Parses the ORIGINAL (distorted) transforms.json.
     // Sets K_orig knobs (orig_focal_x/y, orig_center_x/y, orig_w/h) and
     // OVERRIDES the distortion coefficient knobs with the real values.
-    void _loadOrigJson()
+    // Used in expand mode (called after _loadKnewFromJson).
+    void _loadKorigFromJson(const char* file)
     {
-        if (!_origJsonFile || !*_origJsonFile) return;
+        if (!file || !*file) return;
 
-        std::ifstream ifs(_origJsonFile);
+        std::ifstream ifs(file);
         if (!ifs.is_open()) return;
 
         nlohmann::json j;
