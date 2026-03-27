@@ -722,10 +722,18 @@ private:
         const int inW = input(0)->info().w();
         const int inH = input(0)->info().h();
 
+        // K_new space:
+        //   Undistort expand: output is K_new canvas → use outW/outH
+        //   Distort expand:   input  is K_new canvas → use inW/inH
+        //   Standard:         in/out same size, either works
+        const bool expandMode = (_origW > 0 && _origH > 0);
+        const int kNewW = (expandMode && _mode != 0) ? inW  : outW;
+        const int kNewH = (expandMode && _mode != 0) ? inH  : outH;
+
         double fx, fy;
-        _effectiveFocal(outW, outH, fx, fy);
-        const double cx = _centerX * outW;
-        const double cy = _centerY * outH;
+        _effectiveFocal(kNewW, kNewH, fx, fy);
+        const double cx = _centerX * kNewW;
+        const double cy = _centerY * kNewH;
 
         cv::Mat mapX, mapY;
         _buildMaps(outW, outH, inW, inH, fx, fy, cx, cy, mapX, mapY);
@@ -787,12 +795,16 @@ private:
             ncy = newK.at<double>(1,2);
         }
 
-        // ── K_orig (input/distorted space) ────────────────────────────────────
-        // Standard mode: K_orig = K_new (same K, nfx/nfy/ncx/ncy).
-        // Expand mode:   K_orig from orig_* knobs, scaled to actual input size.
+        // ── K_orig (distorted space) ──────────────────────────────────────────
+        // Standard mode: K_orig = K_new.
+        // Expand mode:
+        //   Undistort: K_orig is the input canvas  → scale to inW/inH
+        //   Distort:   K_orig is the output canvas → scale to outW/outH
         double ofx, ofy, ocx, ocy;
         if (expandMode) {
-            _effectiveOrigFocal(inW, inH, ofx, ofy, ocx, ocy);
+            const int kOrigW = (_mode != 0) ? outW : inW;
+            const int kOrigH = (_mode != 0) ? outH : inH;
+            _effectiveOrigFocal(kOrigW, kOrigH, ofx, ofy, ocx, ocy);
         } else {
             ofx = nfx; ofy = nfy; ocx = ncx; ocy = ncy;
         }
