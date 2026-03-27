@@ -265,31 +265,30 @@ public:
 
         Divider(f, "NeRFStudio Import");
 
-        File_knob(f, &_jsonFile, "json_file", "JSON File");
-        Tooltip(f, "Path to a nerfstudio transforms.json file.\n"
-                   "In expand mode: load the UNDISTORTED JSON here\n"
-                   "  (carries K_new canvas geometry; distortion coefficients zeroed).\n"
-                   "Fields mapped: fl_x/fl_y \xe2\x86\x92 Focal X/Y,\n"
-                   "k1\xe2\x80\x93k4, p1, p2 \xe2\x86\x92 distortion coefficients,\n"
-                   "cx/w, cy/h \xe2\x86\x92 Principal Point X/Y,\n"
-                   "w, h \xe2\x86\x92 native_w, native_h,\n"
-                   "is_fisheye \xe2\x86\x92 Fisheye Model toggle.");
-        Button(f, "load_json", "Load from JSON");
-        Tooltip(f, "Read the JSON file above and fill in all camera parameters.");
-
-        Divider(f, "Original Camera (Expand Mode)");
+        File_knob(f, &_jsonFile, "json_file", "Primary JSON");
+        Tooltip(f, "Standard mode: path to a single nerfstudio transforms.json.\n"
+                   "Expand mode: path to the UNDISTORTED transforms_undistorted.json\n"
+                   "  (K_new canvas geometry; distortion coefficients zeroed).\n"
+                   "Fields loaded: fl_x/fl_y, k1\xe2\x80\x93k4, p1, p2,\n"
+                   "cx/w, cy/h, w/h, is_fisheye.");
 
         File_knob(f, &_origJsonFile, "orig_json_file", "Original JSON");
-        Tooltip(f, "Path to the ORIGINAL (distorted) transforms.json.\n"
+        Tooltip(f, "Expand mode only: path to the ORIGINAL (distorted) transforms.json.\n"
                    "Corresponds to Python --original_json.\n"
-                   "Provides K_orig canvas geometry and real distortion coefficients.\n"
-                   "When orig_w/orig_h > 0, expand mode is activated:\n"
-                   "  Undistort: input K_orig size \xe2\x86\x92 output K_new size\n"
-                   "  Distort  : input K_new size \xe2\x86\x92 output K_orig size\n"
+                   "When set, Load button additionally fills K_orig parameters\n"
+                   "and overrides distortion coefficients with real values.\n"
+                   "Leave empty for standard (non-expand) mode.\n"
                    "Note: expand mode is perspective-only (not fisheye).");
-        Button(f, "load_orig_json", "Load Original JSON");
-        Tooltip(f, "Read the original JSON and fill in K_orig parameters\n"
-                   "and real distortion coefficients (k1, k2, p1, p2, etc.).");
+
+        Button(f, "load_json", "Load from JSON(s)");
+        Tooltip(f, "Load camera parameters from the JSON file(s) above.\n"
+                   "Always loads Primary JSON first (K_new / focal / distortion).\n"
+                   "If Original JSON is also set, loads it second:\n"
+                   "  fills K_orig knobs and OVERRIDES distortion coefficients\n"
+                   "  with the real values from the original camera.\n"
+                   "Using a single button guarantees correct load order.");
+
+        Divider(f, "Original Camera Parameters (Expand Mode)");
 
         Double_knob(f, &_origFocalX, "orig_focal_x", "Orig Focal X");
         SetRange(f, 0, 10000);
@@ -319,11 +318,12 @@ public:
     int knob_changed(Knob* k) override
     {
         if (k->is("load_json")) {
+            // Always load primary JSON first, then original JSON (if set) second.
+            // This guarantees K_orig and real distortion coefficients override
+            // any zeroed values that may have come from the undistorted JSON.
             _loadFromJson();
-            return 1;
-        }
-        if (k->is("load_orig_json")) {
-            _loadOrigJson();
+            if (_origJsonFile && *_origJsonFile)
+                _loadOrigJson();
             return 1;
         }
         return Iop::knob_changed(k);
@@ -338,17 +338,35 @@ public:
         const bool expandMode = (_origW > 0 && _origH > 0);
 
         // In expand mode, change the output bounding box to the target canvas size.
-        // We only set the bounds (x/y/r/t); the format descriptor stays as-is.
+        // Output scales proportionally if the input differs from the calibration size.
+        //   Undistort: input is K_orig space  → output is K_new space
+        //     scale = input / orig_ref  →  out = native_ref * scale
+        //   Distort:   input is K_new space   → output is K_orig space
+        //     scale = input / native_ref  →  out = orig_ref * scale
         if (expandMode) {
+            const int inW = input(0)->info().w();
+            const int inH = input(0)->info().h();
             int out_w, out_h;
             if (_mode == 0) {
-                // Undistort: output is K_new canvas
-                out_w = (_nativeW > 0) ? _nativeW : info_.w();
-                out_h = (_nativeH > 0) ? _nativeH : info_.h();
+                if (_origW > 0 && _nativeW > 0) {
+                    const double sx = static_cast<double>(inW) / _origW;
+                    const double sy = static_cast<double>(inH) / _origH;
+                    out_w = static_cast<int>(std::round(_nativeW * sx));
+                    out_h = static_cast<int>(std::round(_nativeH * sy));
+                } else {
+                    out_w = (_nativeW > 0) ? _nativeW : inW;
+                    out_h = (_nativeH > 0) ? _nativeH : inH;
+                }
             } else {
-                // Distort: output is K_orig canvas
-                out_w = _origW;
-                out_h = _origH;
+                if (_nativeW > 0 && _origW > 0) {
+                    const double sx = static_cast<double>(inW) / _nativeW;
+                    const double sy = static_cast<double>(inH) / _nativeH;
+                    out_w = static_cast<int>(std::round(_origW * sx));
+                    out_h = static_cast<int>(std::round(_origH * sy));
+                } else {
+                    out_w = (_origW > 0) ? _origW : inW;
+                    out_h = (_origH > 0) ? _origH : inH;
+                }
             }
             info_.set(0, 0, out_w, out_h);
         }
