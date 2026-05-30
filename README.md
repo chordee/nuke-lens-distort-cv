@@ -118,7 +118,7 @@ toolset — because each preset uses `VCPKG_MANIFEST_INSTALL=OFF` to avoid
 running vcpkg again during CMake configure.
 
 ```powershell
-cd NukeLensDistort
+cd nuke-lens-distort-cv
 
 # For Nuke 15 (VS2019 / v142)
 vcpkg install --triplet x64-windows-static-md-v142 `
@@ -215,7 +215,7 @@ git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
 export VCPKG_ROOT=/opt/vcpkg   # add to ~/.bashrc
 
 # Install OpenCV (once)
-cd NukeLensDistort
+cd nuke-lens-distort-cv
 vcpkg install --triplet x64-linux --x-install-root vcpkg_installed_linux
 
 # Configure and build
@@ -343,7 +343,7 @@ Parameters can always be edited manually after loading.
 ## Project structure
 
 ```text
-NukeLensDistort/
+nuke-lens-distort-cv/
 ├── src/
 │   └── LensDistort.cpp                    # Plugin source
 ├── triplets/
@@ -374,9 +374,10 @@ NukeLensDistort/
   work is done in plain single-threaded C++ loops. Only
   `cv::fisheye::estimateNewCameraMatrixForUndistortRectify` is called from
   OpenCV (pure matrix math, no threading).
-- **Perspective distort** uses 10-iteration Newton's method to invert the
-  Brown-Conrady model. **Perspective undistort** applies the forward model
-  directly. The output camera matrix equals K (matching Python's `K.copy()`
+- **Perspective distort** uses 10-iteration fixed-point (successive-
+  approximation) iteration to invert the Brown-Conrady model — the same
+  scheme as OpenCV's `undistortPoints`. **Perspective undistort** applies
+  the forward model directly. The output camera matrix equals K (matching Python's `K.copy()`
   behaviour); the Alpha knob has no effect in perspective mode.
 - **Fisheye distort** uses Newton iteration on θ to invert the equidistant
   model. **Fisheye undistort** applies the forward θ model directly.

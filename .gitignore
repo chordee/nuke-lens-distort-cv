@@ -1,10 +1,12 @@
 # Build output
 build/
 build_vs*/
+build_linux/
 
 # vcpkg installed packages (downloaded at configure time)
 vcpkg_installed/
 vcpkg_installed_vs*/
+vcpkg_installed_linux/
 
 # Claude Code session files
 .claude/

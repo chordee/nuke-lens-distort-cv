@@ -900,7 +900,8 @@ private:
                     } else {
                         // PERSPECTIVE DISTORT
                         // Output pixel in K_orig space → source pixel in K_new (input) space.
-                        // Newton-iterate to invert the distortion model.
+                        // Fixed-point iterate to invert the distortion model
+                        // (same scheme as OpenCV undistortPoints).
                         const double xd = (col - ocx) / ofx;
                         const double yd = (row - ocy) / ofy;
                         double xu = xd, yu = yd;

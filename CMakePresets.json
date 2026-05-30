@@ -41,7 +41,9 @@
         "CMAKE_C_COMPILER":       "gcc-11",
         "CMAKE_CXX_COMPILER":     "g++-11",
         "CMAKE_TOOLCHAIN_FILE":   "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET":   "x64-linux"
+        "VCPKG_TARGET_TRIPLET":   "x64-linux",
+        "VCPKG_MANIFEST_INSTALL": "OFF",
+        "VCPKG_INSTALLED_DIR":    "${sourceDir}/vcpkg_installed_linux"
       }
     }
   ],
