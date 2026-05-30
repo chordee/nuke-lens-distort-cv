@@ -524,6 +524,20 @@ private:
         ocy = _origCenterY * inH;
     }
 
+    // ── _jsonIsFisheye ────────────────────────────────────────────────────────
+    // True if the JSON describes an OpenCV fisheye camera, via either the
+    // is_fisheye boolean or nerfstudio's "camera_model": "OPENCV_FISHEYE".
+    static bool _jsonIsFisheye(const nlohmann::json& j)
+    {
+        auto it = j.find("is_fisheye");
+        if (it != j.end() && it->is_boolean())
+            return it->get<bool>();
+        auto cm = j.find("camera_model");
+        if (cm != j.end() && cm->is_string())
+            return *cm == "OPENCV_FISHEYE";
+        return false;
+    }
+
     // ── _loadKnewFromJson ─────────────────────────────────────────────────────
     // Parses a nerfstudio transforms.json and fills K_new (primary camera knobs):
     //   focal_x/y, center_x/y, native_w/h, is_fisheye, and distortion coefficients.
@@ -554,20 +568,24 @@ private:
 
         setK("focal_x", "fl_x");
         setK("focal_y", "fl_y");
+
+        // Fisheye routing: OPENCV_FISHEYE stores radial k1..k4, but the engine
+        // reads fisheye k3/k4 from the p1/p2 knobs (JSON p1/p2 unused). Detect
+        // the model first so k3/k4 land in the knobs the engine actually reads.
+        const bool fisheye = _jsonIsFisheye(j);
+        if (Knob* k = knob("is_fisheye"))
+            k->set_value(fisheye ? 1.0 : 0.0);
+
         setK("k1", "k1");
         setK("k2", "k2");
-        setK("k3", "k3");
-        setK("k4", "k4");
-        setK("p1", "p1");
-        setK("p2", "p2");
-
-        // is_fisheye
-        {
-            auto it = j.find("is_fisheye");
-            if (it != j.end() && it->is_boolean()) {
-                if (Knob* k = knob("is_fisheye"))
-                    k->set_value(it->get<bool>() ? 1.0 : 0.0);
-            }
+        if (fisheye) {
+            setK("p1", "k3");
+            setK("p2", "k4");
+        } else {
+            setK("k3", "k3");
+            setK("k4", "k4");
+            setK("p1", "p1");
+            setK("p2", "p2");
         }
 
         // Principal point: stored as pixel coords in JSON, plugin uses 0-1 fraction.
@@ -623,21 +641,22 @@ private:
         if (w > 0.0) if (Knob* k = knob("orig_w")) k->set_value(w);
         if (h > 0.0) if (Knob* k = knob("orig_h")) k->set_value(h);
 
-        // Override distortion coefficients with real values from original JSON
+        // Override distortion coefficients with real values from original JSON.
+        // Fisheye routing matches _loadKnewFromJson (k3/k4 -> p1/p2 knobs).
+        const bool fisheye = _jsonIsFisheye(j);
+        if (Knob* k = knob("is_fisheye"))
+            k->set_value(fisheye ? 1.0 : 0.0);
+
         setK("k1", "k1");
         setK("k2", "k2");
-        setK("k3", "k3");
-        setK("k4", "k4");
-        setK("p1", "p1");
-        setK("p2", "p2");
-
-        // is_fisheye from original JSON
-        {
-            auto it = j.find("is_fisheye");
-            if (it != j.end() && it->is_boolean()) {
-                if (Knob* k = knob("is_fisheye"))
-                    k->set_value(it->get<bool>() ? 1.0 : 0.0);
-            }
+        if (fisheye) {
+            setK("p1", "k3");
+            setK("p2", "k4");
+        } else {
+            setK("k3", "k3");
+            setK("k4", "k4");
+            setK("p1", "p1");
+            setK("p2", "p2");
         }
     }
 

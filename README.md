@@ -300,9 +300,10 @@ All camera parameters are filled in automatically:
 | --- | --- | --- |
 | `fl_x` | Focal X | direct |
 | `fl_y` | Focal Y | direct |
-| `k1`–`k4` | k1–k4 | direct (OpenCV convention) |
-| `p1`, `p2` | p1, p2 | direct |
-| `is_fisheye` | Fisheye Model | direct |
+| `k1`, `k2` | k1, k2 | direct |
+| `k3`, `k4` | perspective: k3, k4 · **fisheye: p1, p2** | routed by camera model |
+| `p1`, `p2` | p1, p2 | perspective only (ignored for fisheye) |
+| `camera_model` / `is_fisheye` | Fisheye Model | `OPENCV_FISHEYE` → on |
 | `cx / w` | Principal Point X | normalised to 0–1 |
 | `cy / h` | Principal Point Y | normalised to 0–1 |
 | `w` | Native Width | calibration image width (pixels) |
